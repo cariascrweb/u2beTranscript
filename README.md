@@ -36,12 +36,14 @@ For an open link, protect the form with **Cloudflare Turnstile** (free bot check
 Without the keys the check is disabled. With them, the widget only validates on the public hostname,
 so use the public URL.
 
-Optionally add a WAF rate-limiting rule (e.g. more than 5 POSTs per minute per IP → block).
+Add a Cloudflare rate-limiting rule (Domain → Security → Security rules → Rate limiting rules). Free plan:
+`(http.host eq "<your-hostname>" and http.request.method eq "POST")`, characteristic IP,
+more than **3 requests per 10 seconds** → **Block for 10 seconds**.
 For a private page instead, use **Cloudflare Access** with an allow-list of emails.
 
 ## Limits
 
-The app counts every request that reaches YouTube. Defaults: **50 per day in total**, **10 per day per visitor IP**
+The app counts every request that reaches YouTube (after the Turnstile check). Defaults: **50 per day in total**, **10 per day per visitor IP**
 (from Cloudflare's `CF-Connecting-IP`). Change them in `.env` (`DAILY_LIMIT`, `PER_IP_DAILY_LIMIT`, `0` = no limit).
 Counters are in memory: they reset at local midnight and whenever the container restarts.
 
