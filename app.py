@@ -17,7 +17,7 @@ job_lock = threading.Lock()  # one download at a time, to avoid YouTube 429s
 ID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/|embed/|live/)([A-Za-z0-9_-]{11})")
 LANG_PREFERENCE = ["es", "en"]  # first match wins
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>YouTube → TXT</title>
@@ -28,11 +28,38 @@ PAGE = """<!doctype html>
  .err{color:#b00020;margin-top:12px}
 </style></head><body>
 <h2>Transcripción de YouTube</h2>
-<form method="post" onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').innerText='Procesando…'">
+<form method="post" id="f">
  <input name="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus value="{{ url or '' }}">
  <button>Descargar .txt</button>
 </form>
-{% if error %}<p class="err">{{ error }}</p>{% endif %}
+<p class="err" id="err">{{ error or '' }}</p>
+<script>
+const f = document.getElementById('f'), btn = f.querySelector('button'), err = document.getElementById('err');
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  btn.disabled = true; btn.innerText = 'Procesando…'; err.textContent = '';
+  try {
+    const r = await fetch('/', {method: 'POST', body: new FormData(f)});
+    if (!r.ok) {
+      // error pages are this same page with the message in #err
+      const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+      err.textContent = doc.getElementById('err')?.textContent || ('Error ' + r.status);
+      return;
+    }
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+    const name = m ? decodeURIComponent(m[1]) : 'transcript.txt';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(await r.blob()); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (x) {
+    err.textContent = 'No se pudo conectar con el servidor.';
+  } finally {
+    btn.disabled = false; btn.innerText = 'Descargar .txt';
+  }
+});
+</script>
 </body></html>"""
 
 
