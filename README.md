@@ -25,7 +25,7 @@ Open `http://<server>:8090`.
 ## Expose with Cloudflare Tunnel
 
 Add a public hostname in Zero Trust → Networks → Tunnels pointing to `http://yt-transcript:8000`
-(after `docker network connect yt-transcript_default <tunnel-container>`) or to `http://<server-ip>:8090`.
+(after `docker network connect u2betranscript_default <tunnel-container>`) or to `http://<server-ip>:8090`.
 
 Protect it with **Cloudflare Access** (self-hosted app, allow-list of emails); otherwise anyone can use the server's IP against YouTube.
 
