@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/tmp \
     PYTHONUNBUFFERED=1
 
 # yt-dlp is installed at build time (not at container start) so the container
