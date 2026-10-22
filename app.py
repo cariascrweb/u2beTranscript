@@ -91,6 +91,7 @@ def turnstile_ok():
         return True
     token = request.form.get("cf-turnstile-response", "")
     if not token:
+        app.logger.warning("Turnstile: no token in the form submission")
         return False
     data = urllib.parse.urlencode({
         "secret": TS_SECRET,
@@ -100,7 +101,12 @@ def turnstile_ok():
     try:
         with urllib.request.urlopen(
                 "https://challenges.cloudflare.com/turnstile/v0/siteverify", data, timeout=10) as r:
-            return bool(json.load(r).get("success"))
+            result = json.load(r)
+        if not result.get("success"):
+            # e.g. invalid-input-secret, invalid-input-response, timeout-or-duplicate
+            app.logger.warning("Turnstile rejected: %s (hostname=%s)",
+                               result.get("error-codes"), result.get("hostname"))
+        return bool(result.get("success"))
     except Exception as e:
         app.logger.warning("Turnstile verify failed: %s", e)
         return False
