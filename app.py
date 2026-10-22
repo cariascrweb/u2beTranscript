@@ -37,7 +37,6 @@ PAGE = r"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>YouTube → TXT</title>
-{% if site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
 <style>
  body{font-family:system-ui,sans-serif;max-width:560px;margin:12vh auto;padding:0 16px;color:#222}
  form{display:flex;flex-wrap:wrap;gap:8px} .cf-turnstile{flex-basis:100%} input{flex:1;padding:10px;font-size:16px}
@@ -48,16 +47,28 @@ PAGE = r"""<!doctype html>
 <form method="post" id="f">
  <input name="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus value="{{ url or '' }}">
  <button>Descargar .txt</button>
- {% if site_key %}<div class="cf-turnstile" data-sitekey="{{ site_key }}"></div>{% endif %}
+ {% if site_key %}<div class="cf-turnstile" data-sitekey="{{ site_key }}" data-callback="tsOk"
+   data-expired-callback="tsLost" data-error-callback="tsLost" data-timeout-callback="tsLost"></div>{% endif %}
 </form>
 <p class="err" id="err">{{ error or '' }}</p>
 <script>
 const f = document.getElementById('f'), btn = f.querySelector('button'), err = document.getElementById('err');
+const NEED_TS = {{ 'true' if site_key else 'false' }};
+let tsToken = '', busy = false;
+// With Turnstile, the button is only enabled while a valid token exists.
+function setBtn() { btn.disabled = busy || (NEED_TS && !tsToken); }
+function tsOk(token) { tsToken = token; setBtn(); }
+function tsLost() { tsToken = ''; setBtn(); }
+setBtn();
 f.addEventListener('submit', async (e) => {
   e.preventDefault();
-  btn.disabled = true; btn.innerText = 'Procesando…'; err.textContent = '';
+  const token = NEED_TS ? (tsToken || (window.turnstile && turnstile.getResponse()) || '') : '';
+  if (NEED_TS && !token) { err.textContent = 'Espere a que termine la verificación anti-bot.'; return; }
+  busy = true; setBtn(); btn.innerText = 'Procesando…'; err.textContent = '';
+  const fd = new FormData(f);
+  if (NEED_TS) fd.set('cf-turnstile-response', token);  // send the token explicitly
   try {
-    const r = await fetch('/', {method: 'POST', body: new FormData(f)});
+    const r = await fetch('/', {method: 'POST', body: fd});
     if (!r.ok) {
       // error pages are this same page with the message in #err
       const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
@@ -74,11 +85,13 @@ f.addEventListener('submit', async (e) => {
   } catch (x) {
     err.textContent = 'No se pudo conectar con el servidor.';
   } finally {
-    btn.disabled = false; btn.innerText = 'Descargar .txt';
-    if (window.turnstile) turnstile.reset();  // each token is single-use
+    busy = false; btn.innerText = 'Descargar .txt';
+    if (NEED_TS) { tsToken = ''; if (window.turnstile) turnstile.reset(); }  // each token is single-use
+    setBtn();
   }
 });
 </script>
+{% if site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
 </body></html>"""
 
 
@@ -91,7 +104,8 @@ def turnstile_ok():
         return True
     token = request.form.get("cf-turnstile-response", "")
     if not token:
-        app.logger.warning("Turnstile: no token in the form submission")
+        app.logger.warning("Turnstile: no token in the form submission (fields received: %s)",
+                           sorted(request.form.keys()))
         return False
     data = urllib.parse.urlencode({
         "secret": TS_SECRET,
