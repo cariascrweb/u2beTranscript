@@ -27,7 +27,17 @@ Open `http://<server>:8090`.
 Add a public hostname in Zero Trust → Networks → Tunnels pointing to `http://yt-transcript:8000`
 (after `docker network connect u2betranscript_default <tunnel-container>`) or to `http://<server-ip>:8090`.
 
-Protect it with **Cloudflare Access** (self-hosted app, allow-list of emails); otherwise anyone can use the server's IP against YouTube.
+For an open link, protect the form with **Cloudflare Turnstile** (free bot check):
+
+1. Cloudflare dashboard → Turnstile → Add widget, hostname = your public hostname.
+2. On the server: `cp .env.example .env` and fill in `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`.
+3. `docker compose up -d --build`
+
+Without the keys the check is disabled. With them, the widget only validates on the public hostname,
+so use the public URL rather than `http://<server-ip>:8090`.
+
+Optionally add a WAF rate-limiting rule (e.g. more than 5 POSTs per minute per IP → block).
+For a private page instead, use **Cloudflare Access** with an allow-list of emails.
 
 ## Troubleshooting
 

@@ -1,11 +1,14 @@
 import glob
 import io
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
 import threading
+import urllib.parse
+import urllib.request
 
 from flask import Flask, request, send_file, render_template_string
 
@@ -17,13 +20,18 @@ job_lock = threading.Lock()  # one download at a time, to avoid YouTube 429s
 ID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/|embed/|live/)([A-Za-z0-9_-]{11})")
 LANG_PREFERENCE = ["es", "en"]  # first match wins
 
+# Cloudflare Turnstile (bot check). Disabled when the keys are not set.
+TS_SITE = os.environ.get("TURNSTILE_SITE_KEY", "")
+TS_SECRET = os.environ.get("TURNSTILE_SECRET_KEY", "")
+
 PAGE = r"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>YouTube → TXT</title>
+{% if site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
 <style>
  body{font-family:system-ui,sans-serif;max-width:560px;margin:12vh auto;padding:0 16px;color:#222}
- form{display:flex;gap:8px} input{flex:1;padding:10px;font-size:16px}
+ form{display:flex;flex-wrap:wrap;gap:8px} .cf-turnstile{flex-basis:100%} input{flex:1;padding:10px;font-size:16px}
  button{padding:10px 16px;font-size:16px;cursor:pointer}
  .err{color:#b00020;margin-top:12px}
 </style></head><body>
@@ -31,6 +39,7 @@ PAGE = r"""<!doctype html>
 <form method="post" id="f">
  <input name="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus value="{{ url or '' }}">
  <button>Descargar .txt</button>
+ {% if site_key %}<div class="cf-turnstile" data-sitekey="{{ site_key }}"></div>{% endif %}
 </form>
 <p class="err" id="err">{{ error or '' }}</p>
 <script>
@@ -57,10 +66,35 @@ f.addEventListener('submit', async (e) => {
     err.textContent = 'No se pudo conectar con el servidor.';
   } finally {
     btn.disabled = false; btn.innerText = 'Descargar .txt';
+    if (window.turnstile) turnstile.reset();  // each token is single-use
   }
 });
 </script>
 </body></html>"""
+
+
+def page(**kw):
+    return render_template_string(PAGE, site_key=TS_SITE, **kw)
+
+
+def turnstile_ok():
+    if not TS_SECRET:
+        return True
+    token = request.form.get("cf-turnstile-response", "")
+    if not token:
+        return False
+    data = urllib.parse.urlencode({
+        "secret": TS_SECRET,
+        "response": token,
+        "remoteip": request.headers.get("CF-Connecting-IP", request.remote_addr or ""),
+    }).encode()
+    try:
+        with urllib.request.urlopen(
+                "https://challenges.cloudflare.com/turnstile/v0/siteverify", data, timeout=10) as r:
+            return bool(json.load(r).get("success"))
+    except Exception as e:
+        app.logger.warning("Turnstile verify failed: %s", e)
+        return False
 
 
 def pick_vtt(files):
@@ -75,16 +109,19 @@ def pick_vtt(files):
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "GET":
-        return render_template_string(PAGE)
+        return page()
 
     url = request.form.get("url", "").strip()
     m = ID_RE.search(url)
     if not m:
-        return render_template_string(PAGE, url=url, error="URL de YouTube no válida."), 400
+        return page(url=url, error="URL de YouTube no válida."), 400
     video_id = m.group(1)
 
+    if not turnstile_ok():
+        return page(url=url, error="Verificación anti-bot fallida. Intente de nuevo."), 403
+
     if not job_lock.acquire(timeout=60):
-        return render_template_string(PAGE, url=url, error="Servidor ocupado, intente de nuevo en un minuto."), 503
+        return page(url=url, error="Servidor ocupado, intente de nuevo en un minuto."), 503
     tmp = tempfile.mkdtemp(prefix="yt_")
     try:
         cmd = [
@@ -104,14 +141,14 @@ def index():
             else:
                 msg = "No se encontraron subtítulos para este video."
             app.logger.warning(proc.stderr[-2000:])
-            return render_template_string(PAGE, url=url, error=msg), 502
+            return page(url=url, error=msg), 502
 
         name = re.sub(r"\.[\w-]+\.vtt$", ".txt", os.path.basename(vtt))
         data = io.BytesIO(vtt_to_text(vtt).encode("utf-8"))
         return send_file(data, as_attachment=True, download_name=name,
                          mimetype="text/plain; charset=utf-8")
     except subprocess.TimeoutExpired:
-        return render_template_string(PAGE, url=url, error="Tiempo de espera agotado."), 504
+        return page(url=url, error="Tiempo de espera agotado."), 504
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         job_lock.release()
