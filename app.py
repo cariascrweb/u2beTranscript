@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from datetime import datetime, timedelta, timezone
 import urllib.parse
 import urllib.request
 
@@ -23,6 +24,14 @@ LANG_PREFERENCE = ["es", "en"]  # first match wins
 # Cloudflare Turnstile (bot check). Disabled when the keys are not set.
 TS_SITE = os.environ.get("TURNSTILE_SITE_KEY", "")
 TS_SECRET = os.environ.get("TURNSTILE_SECRET_KEY", "")
+
+# Daily caps on requests that reach YouTube (0 = no limit). Counters live in
+# memory and reset at local midnight (or when the container restarts).
+DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "50"))
+PER_IP_DAILY_LIMIT = int(os.environ.get("PER_IP_DAILY_LIMIT", "10"))
+LOCAL_TZ = timezone(timedelta(hours=int(os.environ.get("UTC_OFFSET_HOURS", "-6"))))  # Costa Rica
+_quota = {"day": None, "total": 0, "per_ip": {}}
+_quota_lock = threading.Lock()
 
 PAGE = r"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
@@ -86,7 +95,7 @@ def turnstile_ok():
     data = urllib.parse.urlencode({
         "secret": TS_SECRET,
         "response": token,
-        "remoteip": request.headers.get("CF-Connecting-IP", request.remote_addr or ""),
+        "remoteip": client_ip(),
     }).encode()
     try:
         with urllib.request.urlopen(
@@ -95,6 +104,27 @@ def turnstile_ok():
     except Exception as e:
         app.logger.warning("Turnstile verify failed: %s", e)
         return False
+
+
+def client_ip():
+    # Behind the Cloudflare Tunnel every request comes from the tunnel
+    # container, so the real visitor IP is in CF-Connecting-IP.
+    return request.headers.get("CF-Connecting-IP") or request.remote_addr or "unknown"
+
+
+def take_quota(ip):
+    """Count one YouTube request. Returns an error message if a cap is hit."""
+    today = datetime.now(LOCAL_TZ).date()
+    with _quota_lock:
+        if _quota["day"] != today:
+            _quota.update(day=today, total=0, per_ip={})
+        if DAILY_LIMIT and _quota["total"] >= DAILY_LIMIT:
+            return "Se alcanzó el límite diario del servicio. Intente mañana."
+        if PER_IP_DAILY_LIMIT and _quota["per_ip"].get(ip, 0) >= PER_IP_DAILY_LIMIT:
+            return f"Alcanzó su límite de {PER_IP_DAILY_LIMIT} transcripciones por día. Intente mañana."
+        _quota["total"] += 1
+        _quota["per_ip"][ip] = _quota["per_ip"].get(ip, 0) + 1
+    return None
 
 
 def pick_vtt(files):
@@ -119,6 +149,11 @@ def index():
 
     if not turnstile_ok():
         return page(url=url, error="Verificación anti-bot fallida. Intente de nuevo."), 403
+
+    over = take_quota(client_ip())
+    if over:
+        app.logger.warning("Quota hit for %s: %s", client_ip(), over)
+        return page(url=url, error=over), 429
 
     if not job_lock.acquire(timeout=60):
         return page(url=url, error="Servidor ocupado, intente de nuevo en un minuto."), 503

@@ -4,13 +4,22 @@ services:
     container_name: yt-transcript
     restart: unless-stopped
     env_file:
-      - path: .env        # TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY
+      - path: .env        # Turnstile keys, optional DAILY_LIMIT / PER_IP_DAILY_LIMIT
         required: false
     ports:
-      - "8090:8000"          # LAN access; optional if the tunnel reaches it by container name
+      - "127.0.0.1:8090:8000"   # only reachable from salitral itself; the tunnel uses the container name
     volumes:
-      - ./cookies:/cookies:ro   # optional: put a cookies.txt here if YouTube keeps returning 429
+      - ./cookies:/cookies:ro   # optional cookies.txt (must be readable by uid 10001)
+    # --- hardening ---
+    read_only: true             # container filesystem is read-only...
     tmpfs:
-      - /tmp
+      - /tmp                    # ...except /tmp, used for subtitle downloads
+    cap_drop:
+      - ALL                     # no Linux capabilities
+    security_opt:
+      - no-new-privileges:true  # nothing inside can gain extra privileges
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 100
     labels:
       - com.centurylinklabs.watchtower.enable=false   # locally built image, nothing to pull
